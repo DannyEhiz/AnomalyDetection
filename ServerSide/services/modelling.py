@@ -208,3 +208,6 @@ if "__name__" == "__main__":
                 print(f"Training failed for server {server}.")
         else:
             print(f"No data found for server {server}. Skipping to next server...")
+
+
+# use shap values tio explain the cause of anomalies with AI

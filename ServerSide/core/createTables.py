@@ -1,10 +1,68 @@
 import sqlite3 
 import pandas as pd 
 
-def create_alert_users_table():
-    """Creates the alertUsers table if it doesn't exist."""
+def anomalies():
+    """Creates the anomalies table in the local SQLite DB if it doesn't exist."""
     try:
-        with sqlite3.connect('EdgeDB.db') as conn:
+        with sqlite3.connect('ServerSide/database/main.sqlite3') as conn:
+            conn.execute('PRAGMA journal_mode=WAL;')
+            c = conn.cursor()
+            c.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='anomalies';")
+            table_exists = c.fetchone()
+            if not table_exists:
+                c.execute("""
+                    CREATE TABLE IF NOT EXISTS anomalies (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        timestamp TEXT NOT NULL,
+                        server TEXT NOT NULL,
+                        metric TEXT NOT NULL, -- 'CPU', 'MEM', 'DISK'
+                        value REAL NOT NULL, -- anomalous_value 
+                        severity REAL NOT NULL,
+                        ai_summary TEXT,
+                        ai_recommendation TEXT)
+                """)
+                conn.commit()
+            else:
+                pass
+    except Exception as e:
+        print(f'Error while creating the anomalies table: {e} ')
+
+
+def retrainLog():
+    """"Creates a retraining to show the progress and status of each servers model retraining """
+    try:
+        with sqlite3.connect('ServerSide/database/main.sqlite3') as conn:
+            conn.execute('PRAGMA journal_mode=WAL;')
+            c = conn.cursor()
+            c.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='retrainLog';")
+            table_exists = c.fetchone()
+            if not table_exists:
+                c.execute("""
+                    CREATE TABLE IF NOT EXISTS retrainLog (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        modelName TEXT NOT NULL, -- name of the model being retrained
+                        server TEXT NOT NULL,
+                        status TEXT NOT NULL, -- 'successful', 'failed', 'rejected'
+                        trainingLoss REAL,
+                        lossConvergencePlot TEXT, -- path to the loss convergence plot image
+                        message TEXT,
+                        start_time TEXT NOT NULL,
+                        end_time TEXT,
+                    )
+                """)
+                conn.commit()
+            else:
+                pass
+    except Exception as e:
+        print(f'Error while creating the retrainLog table: {e} ')
+
+
+
+
+def alertUsers():
+    """Registered users who receive alerts."""
+    try:
+        with sqlite3.connect('ServerSide/database/main.sqlite3') as conn:
             conn.execute('PRAGMA journal_mode=WAL')
             c = conn.cursor()
             c.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='alertUsers';")
@@ -12,17 +70,10 @@ def create_alert_users_table():
             if not table_exists:
                 c.execute("""
                     CREATE TABLE IF NOT EXISTS alertUsers (
-                        Username TEXT,
-                        Active INT,
-                        MgtZone TEXT,
-                        Server_List TEXT,
-                        IPAddress TEXT,
-                        CPU_thresh TEXT,
-                        MEM_thresh TEXT,
-                        DISK_thresh TEXT,
-                        Emails TEXT,
-                        AlertType TEXT,
-                        Alerting_AI TEXT,
+                        username TEXT,
+                        server TEXT,
+                        ipAddress TEXT,
+                        email TEXT,
                         dateCreated TEXT
                     )
                 """)
@@ -34,37 +85,11 @@ def create_alert_users_table():
         print(f'Error while creating the create_alert_users_table table: {e} ')
 
 
-def createOpenProblems():
-    """ Creates the openProblems table in the local SQLite DB if it doesn't exist. """
-    try:
-        with sqlite3.connect('EdgeDB.db') as conn:
-            conn.execute('PRAGMA journal_mode=WAL;')
-            c = conn.cursor()
-            c.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='openProblems';")
-            table_exists = c.fetchone()
-            if not table_exists:
-                c.execute("""
-                    CREATE TABLE IF NOT EXISTS openProblems (
-                        id INTEGER PRIMARY KEY AUTOINCREMENT,
-                        alert_username TEXT NOT NULL,
-                        server TEXT NOT NULL,
-                        drive TEXT NOT NULL,
-                        metric TEXT NOT NULL, -- 'CPU', 'MEM', 'DISK'
-                        breached_value REAL,
-                        threshold_value REAL,
-                        first_breach_date TEXT NOT NULL,
-                        time_active TEXT NOT NULL,
-                        status TEXT DEFAULT 'OPEN')""")
-                conn.commit()
-            else:
-                pass
-    except Exception as e:
-        print(f'Error while creating the openProblems table: {e} ')
 
 def createRegisteredEmails():
-    """ Creates the registeredEmails table in the local SQLite DB if it doesn't exist. """
+    """Registered emails to recieve alerts. """
     try:
-        with sqlite3.connect('EdgeDB.db') as conn:
+        with sqlite3.connect('ServerSide/database/main.sqlite3') as conn:
             conn.execute('PRAGMA journal_mode=WAL;')
             c = conn.cursor()
             c.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='regEmails';")
@@ -83,59 +108,11 @@ def createRegisteredEmails():
         print(f'Error while creating the email regsitration table: {e}')
 
 
-def inactiveServerTable():
-    """Creates the inactiveServers table in the local SQLite DB if it doesn't exist."""
-    try:
-        with sqlite3.connect('EdgeDB.db') as conn:
-            conn.execute('PRAGMA journal_mode=WAL;')
-            c = conn.cursor()
-            c.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='inactiveServers';")
-            table_exists = c.fetchone()
-            if not table_exists:
-                c.execute("""
-                    CREATE TABLE IF NOT EXISTS inactiveServers (
-                        id INTEGER PRIMARY KEY AUTOINCREMENT,
-                        email TEXT,
-                        server TEXT NOT NULL,
-                        ip_address TEXT,
-                        mgt_zone TEXT,
-                        dateCreated TEXT
-                    )
-                """)
-                conn.commit()
-    except Exception as e:
-        print(f'Error while creating the inactiveServers table: {e}')
-
-def lastTelemetryTime():
-    try:
-        with sqlite3.connect('EdgeDB.db') as conn:
-            conn.execute('PRAGMA journal_mode=WAL;')
-            c = conn.cursor()
-            c.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='latestTelemetry';")
-            table_exists = c.fetchone()
-            if not table_exists:
-                c.execute("""
-                    CREATE TABLE IF NOT EXISTS latestTelemetry (
-                        id INTEGER PRIMARY KEY AUTOINCREMENT,
-                        LogTimestamp TEXT,
-                        server TEXT NOT NULL,
-                        ip_address TEXT,
-                        mgt_zone TEXT,
-                        latestLog TEXT
-                    )
-                """)
-                conn.commit()
-    except Exception as e:
-        print(f'Error while creating the inactiveServers table: {e}')
-
-
-
-
 
 
 if __name__ == '__main__':
-    createOpenProblems()
+    anomalies()
+    retrainLog()
+    alertUsers()
     createRegisteredEmails()
-    create_alert_users_table()
-    inactiveServerTable()
-    lastTelemetryTime()
+    print("All tables created successfully.")

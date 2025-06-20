@@ -1,5 +1,5 @@
 import pandas as pd
-from core.connection import fetchFromClientDB, saveToSQLite   
+from ServerSide.core.connection import fetchFromClientDB, saveToSQLite   
 import sqlite3
 from datetime import datetime
 import json
