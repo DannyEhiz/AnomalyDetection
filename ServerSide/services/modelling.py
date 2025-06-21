@@ -2,6 +2,8 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 import csv
+import xgboost as xgb
+import shap
 import warnings 
 warnings.filterwarnings("ignore", category=FutureWarning)  # Suppress FutureWarnings
 from sklearn.preprocessing import MinMaxScaler
@@ -12,6 +14,7 @@ from tensorflow.keras.callbacks import EarlyStopping # type: ignore
 import plotly.graph_objects as go
 import sqlite3
 import os, joblib
+from ServerSide.core.createTables import featureImportance
 import logging
 from logging.handlers import RotatingFileHandler
 from core.logger import logging_setup
@@ -31,7 +34,7 @@ def loadData(serverName: str):
         pd.DataFrame: DataFrame containing the server's utilization data.
     """
     try:
-        with sqlite3.connect('main.sqlite3') as conn:
+        with sqlite3.connect('ServerSide/database/main.sqlite3') as conn:
             conn.execute('PRAGMA journal_mode=WAL')
             data = pd.read_sql_query(f"SELECT * FROM Infra_Utilization WHERE Hostname = ?", conn, params=(serverName,))
         if not data.empty:
@@ -61,10 +64,10 @@ def preprocessData(df: pd.DataFrame, serverName: str):
         try:
             data = df.copy()
             for col in cols:
-                os.makedirs(f'models/scalers/{serverName}', exist_ok=True)
+                os.makedirs(f'ServerSide/models/scalers/{serverName}', exist_ok=True)
                 scaler = MinMaxScaler()
                 data[col] = scaler.fit_transform(data[[col]])
-                joblib.dump(scaler, open(f"models/scalers/{serverName}/{col}_scaler.pkl", 'wb'))
+                joblib.dump(scaler, open(f"ServerSide/models/scalers/{serverName}/{col}_scaler.pkl", 'wb'))
 
             print(f"Data for server {serverName} preprocessed successfully.")    
             logger.info(f"Data for server {serverName} preprocessed successfully.")    
@@ -101,7 +104,10 @@ def buildLSTM_Autoencoder(data, sequence_length):
 def train_and_validate(data, serverName, seq_len, val_split=0.1, epochs=20, batch_size=32):
     """
     Full training pipeline with dynamic thresholding
-    Returns: model, train_history, threshold
+    LSTM Autoencoder outputs reconstruction error per sample.
+    XGBoost is trained to predict that error from the last row of each input sequence.
+    SHAP explains the XGBoost predictions → you get feature importance per anomaly. And its saved
+    Returns: modelAccepted, model, threshold, historyLoss, historyValLoss, fig
     """
     scaled_data = preprocessData(data, serverName=serverName)
     if scaled_data is None or scaled_data.empty:
@@ -138,12 +144,7 @@ def train_and_validate(data, serverName, seq_len, val_split=0.1, epochs=20, batc
     max_allowed_loss = np.mean(val_errors) + 2 * np.std(val_errors)
     final_val_loss = history.history['val_loss'][-1]
     
-    if final_val_loss <= max_allowed_loss:
-        print(f"\t\t✅ {serverName} Model accepted - Validation loss within acceptable range")
-        logger.info(f"{serverName} Model accepted - Validation loss within acceptable range")
-        modelAccepted = True
-        model.save(f'models/LSTM/{serverName}_lstm.h5')
-    else:
+    if final_val_loss > max_allowed_loss:
         print(f"\t\t❌ {serverName} Model rejected - Validation loss exceeds threshold ({final_val_loss:.6f} > {max_allowed_loss:.6f})")
         logger.error(f"{serverName} Model rejected - Validation loss exceeds threshold ({final_val_loss:.6f} > {max_allowed_loss:.6f})")
         modelAccepted = False
@@ -153,12 +154,44 @@ def train_and_validate(data, serverName, seq_len, val_split=0.1, epochs=20, batc
             if csvfile.tell() == 0:
                 csv_writer.writerow(['Model Name', 'Max Allowed Loss', 'Validation Loss'])  # Header
             csv_writer.writerow([f'{serverName}_lstm.h5',f'{max_allowed_loss:.6f}', f'{final_val_loss:.6f}'])
+        return modelAccepted
 
+    print(f"\t\t✅ {serverName} Model accepted - Validation loss within acceptable range")
+    logger.info(f"{serverName} Model accepted - Validation loss within acceptable range")
+    modelAccepted = True
+    os.makedirs(f'ServerSide/models/LSTM', exist_ok=True)
+    model.save(f'ServerSide/models/LSTM/{serverName}_lstm.h5')
+
+    # Summarize the loss and fit a surrogate model like XGBoost. That gives you interpretable SHAP values explaining which features contributed most to high reconstruction error (i.e., anomaly score).
+    reconstruction = model.predict(X_train)
+    recon_error = np.mean((reconstruction - X_train)**2, axis=(1, 2))
+    X_flat = X_train[:, -1, :]  # Use the last timestep of each sequence
+    regressor = xgb.XGBRegressor()
+    regressor.fit(X_flat, recon_error)
+    # SHAP on surrogate
+    explainer = shap.Explainer(regressor)
+    shap_values = explainer(X_flat)
+    shap_array = np.abs(shap_values.values)  
+    mean_shap = np.mean(shap_array, axis=0)  
+
+    # Create a ranked DataFrame of feature that most contribute to the anomaly
+    importance_df = pd.DataFrame({
+        'Feature': ['CPUUsage', 'MemoryUsage', 'DiskUsage', 'NetworkTrafficReceived', 'NetworkTrafficSent'],
+        'Mean_SHAP_Importance': mean_shap
+    }).sort_values(by='Mean_SHAP_Importance', ascending=False).reset_index(drop=True)
     
+    saveFeatureImportance(serverName, importance_df)
+
+    shap.summary_plot(shap_values, X_flat, feature_names=['CPUUsage', 'MemoryUsage', 'DiskUsage', 'NetworkTrafficReceived', 'NetworkTrafficSent'], show=False)
+    plotfig = plt.gcf()
+    os.makedirs(f'ServerSide/models/shapSummaryPlot', exist_ok=True)
+    plotfig.savefig(f"ServerSide/models/shapSummaryPlot/{serverName}_@shap_summary.svg", bbox_inches="tight")
+    plt.close(plotfig)
+
+    # Recontruction Loss Plot 
     mean_mse = np.mean(val_errors)
     std_mse = np.std(val_errors)
     anomaly_threshold = mean_mse + 3 * std_mse
-
     # Create the plot
     fig = go.Figure()
     fig.add_trace(go.Scatter(
@@ -182,11 +215,23 @@ def train_and_validate(data, serverName, seq_len, val_split=0.1, epochs=20, batc
         legend=dict(x=0, y=1),
         template='plotly_white'
     )
+    os.makedirs(f'ServerSide/models/reconLossPlot', exist_ok=True)
+    fig.write_image(f'ServerSide/models/reconLossPlot/{serverName}.svg', scale=2)
+    return  modelAccepted 
 
-    return modelAccepted, model, threshold, historyLoss, historyValLoss, fig
+# A good mse, in a normalized data, should range between 0.0001 -> 0.01 
+
+def saveFeatureImportance(serverName, data):
+    """Save the feature importance of the model. Used to know what feature is causing the anomaly"""
+    featureImportance(serverName)
+    with sqlite3.connect('ServerSide/database/featImportance.sqlite3') as conn:
+        c = conn.cursor()  
+        data.to_sql(serverName, conn, if_exists='replace', index=False) 
+        del data
 
 
-if "__name__" == "__main__":
+
+if __name__ == "__main__":
     with sqlite3.connect('main.sqlite3') as conn:
         conn.execute('PRAGMA journal_mode=WAL')
         servers = pd.read_sql_query("SELECT DISTINCT Hostname FROM Infra_Utilization", conn)
@@ -202,12 +247,15 @@ if "__name__" == "__main__":
                 modelAccepted, model, threshold, historyLoss, historyValLoss, fig = result
                 if modelAccepted:
                     print(f"Model for {server} trained and saved successfully.")
+                    logger.info(f"Model for {server} trained and saved successfully.")
                 else:
                     print(f"Model for {server} was not accepted.")
+                    logger.info(f"Model for {server} was not accepted.")
             else:
                 print(f"Training failed for server {server}.")
+                logger.error(f"Training failed for server {server}.")
         else:
             print(f"No data found for server {server}. Skipping to next server...")
+            logger.error(f"No data found for server {server}. Skipping to next server...")
 
 
-# use shap values tio explain the cause of anomalies with AI

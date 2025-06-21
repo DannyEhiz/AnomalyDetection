@@ -76,6 +76,10 @@ def refresh_data():
 
 if __name__ == "__main__":
     refresh_data()
-    print(f'\nNext refresh is  ...')
+    from datetime import datetime, timedelta
+    now = datetime.now()
+    seven_days_later = now + timedelta(days=7)
+    print(f"Next refresh date is {seven_days_later.strftime('%A %Y-%m-%d at %H:%M')}")
+    logger.info(f"Next refresh date is {seven_days_later.strftime('%A %Y-%m-%d at %H:%M')}")
     gc.collect()
     del gc.garbage[:]

@@ -1,7 +1,8 @@
 from apscheduler.schedulers.blocking import BlockingScheduler
 from datetime import datetime
-from ServerSide.core.connection import fetchFromClientDB
-from ServerSide.services.modelling import train_models  # Adjust path if needed
+from ServerSide.services.modelling import train_models 
+import subprocess
+
 
 scheduler = BlockingScheduler()
 
@@ -11,19 +12,18 @@ def weekly_job():
     
     # Step 1: Fetch data
     try:
-        fetchFromClientDB()
-        print("✅ Data fetch successful.")
+        print("📅 Auto Data Collection started.")
+        refresher = subprocess.Popen(["python", "ServerSide/services/dataRefresh.py"], check=True )
+        refresher.wait()
     except Exception as e:
         print(f"❌ Data fetch failed: {e}")
-        return
 
     # Step 2: Train model
     try:
-        train_models()
-        print("✅ Model retraining successful.")
+        print("📅 Auto trainer started.")
+        subprocess.run(["python", "ServerSide/services/modelling.py"], check=True )
     except Exception as e:
         print(f"❌ Model retraining failed: {e}")
 
 if __name__ == "__main__":
-    print("📅 Scheduler started. Waiting for Sunday 2 AM...")
     scheduler.start()

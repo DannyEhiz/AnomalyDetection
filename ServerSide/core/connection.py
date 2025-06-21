@@ -61,7 +61,7 @@ def connectClientDB(server: str, database: str, username: str, password: str):
         print("Couldnt connect to database: ",e)
         return None
 
-def tableExist(tableName: str, dbName: str = 'main.sqlite3') -> bool:
+def tableExist(tableName: str, dbName: str = 'ServerSide/database/main.sqlite3') -> bool:
     """
     Check if a table exists in the SQLite database.
     Args:
@@ -93,11 +93,6 @@ def fetchFromClientDB(tab1, tab2):
 
     last_update_time = get_last_update_time()
     df = None
-
-    with sqlite3.connect('main.sqlite3') as conn:
-        c = conn.cursor()
-        c.execute("DELETE FROM Infra_Utilization")
-        c.execute("VACUUM")
 
     if not last_update_time:
         last_update_time = seven_days_ago_str
@@ -158,7 +153,7 @@ def saveToSQLite(data: pd.DataFrame):
     Exception: If an error occurs during the database operations, 
                an exception will be raised and printed to the console.
     """
-    with sqlite3.connect('main.sqlite3') as conn:
+    with sqlite3.connect('ServerSide/database/main.sqlite3') as conn:
         c = conn.cursor()  
         try:
             if data is not None:
@@ -182,7 +177,7 @@ def saveLastUpdateTime():
     Returns:
         None: It doesnt return any value. All it does is save latest time to the database 
     """
-    with sqlite3.connect('main.sqlite3') as conn:
+    with sqlite3.connect('ServerSide/database/main.sqlite3') as conn:
         c = conn.cursor()
         c.execute("SELECT MAX(LogTimestamp) FROM Infra_Utilization")  # Get the latest timestamp from the Logtimestamp column   
         lastUpdate = c.fetchone()
@@ -203,7 +198,7 @@ def get_last_update_time():
         lastUpdateTime: The latest time in a SQL table and outputs the time in 'YYYY-MM-DD HH:MM:SS' format.
     """    
     try:
-        with  sqlite3.connect('main.sqlite3') as conn:
+        with  sqlite3.connect('ServerSide/database/main.sqlite3') as conn:
             c = conn.cursor()
             c.execute("SELECT last_update_time FROM latestLogTime ORDER BY id DESC LIMIT 1")    
             lastUpdate = c.fetchone()

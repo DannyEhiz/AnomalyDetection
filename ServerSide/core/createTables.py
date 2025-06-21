@@ -57,6 +57,30 @@ def retrainLog():
         print(f'Error while creating the retrainLog table: {e} ')
 
 
+def featureImportance(serverName):
+    """creates a feature importance to view the feature causing the anomaly """
+    try:
+        with sqlite3.connect('ServerSide/database/featImportance.sqlite3') as conn:
+            conn.execute('PRAGMA journal_mode=WAL')
+            c = conn.cursor()
+            c.execute(f"SELECT name FROM sqlite_master WHERE type='table' AND name='{serverName}';")
+            table_exists = c.fetchone()
+            if not table_exists:
+                c.execute("""
+                    CREATE TABLE IF NOT EXISTS alertUsers (
+                        server TEXT,
+                        feature TEXT,
+                        importance TEXT,
+                        dateCreated TEXT
+                    )
+                """)
+
+                conn.commit()
+            else:
+                pass
+    except Exception as e:
+        print(f'Error while creating the create_alert_users_table table: {e} ')
+
 
 
 def alertUsers():
@@ -115,4 +139,5 @@ if __name__ == '__main__':
     retrainLog()
     alertUsers()
     createRegisteredEmails()
+    # ! Dont add the featureImportance function, it will be added in the model training script
     print("All tables created successfully.")
