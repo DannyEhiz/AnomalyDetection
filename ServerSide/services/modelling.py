@@ -90,25 +90,33 @@ def buildLSTM_Autoencoder(data, sequence_length):
         keras.models.Sequential: Compiled LSTM model.
     """
     model = Sequential([
-        LSTM(64, activation='relu', input_shape=(sequence_length, 5), return_sequences=False),
+        LSTM(128, activation='relu', input_shape=(sequence_length, 5), return_sequences=False),
         RepeatVector(sequence_length),
-        LSTM(64, activation='relu', return_sequences=True),
+        LSTM(128, activation='relu', return_sequences=True),
         TimeDistributed(Dense(5))
     ])
-
     model.compile(optimizer='adam', loss='mse')
     # model.fit(data, data, epochs=4, batch_size=32, validation_split=0.1, verbose=1 ) # type: ignore
     
     return model
 
-def train_and_validate(data, serverName, seq_len, val_split=0.1, epochs=20, batch_size=32):
+def train_and_validate(data, serverName, seq_len, modelAcceptability, val_split=0.1, epochs=20, batch_size=32):
     """
+    modelAcceptability is either strict, lenient, or robust
     Full training pipeline with dynamic thresholding
     LSTM Autoencoder outputs reconstruction error per sample.
     XGBoost is trained to predict that error from the last row of each input sequence.
     SHAP explains the XGBoost predictions → you get feature importance per anomaly. And its saved
     Returns: modelAccepted, model, threshold, historyLoss, historyValLoss, fig
     """
+
+    if modelAcceptability.lower() == 'strict':
+        accept = 1.5
+    elif modelAcceptability.lower() == 'lenient':
+        accept = 2.0
+    elif modelAcceptability.lower() == 'robust':
+        accept = 3.0
+
     scaled_data = preprocessData(data, serverName=serverName)
     if scaled_data is None or scaled_data.empty:
         return None
@@ -130,18 +138,19 @@ def train_and_validate(data, serverName, seq_len, val_split=0.1, epochs=20, batc
     
     historyLoss = history.history['loss']
     historyValLoss = history.history['val_loss']
-    
+
     # 5. Calculate dynamic threshold (using validation reconstructions)
-    val_recon = model.predict(X_train[:int(len(X_train)*val_split)])  # Get the actual validation set
-    val_errors = np.mean(np.square(X_train[:int(len(X_train)*val_split)] - val_recon), axis=(1,2))
+    val_X = X_train[:int(len(X_train)*val_split)] #use 10% for validation
+    val_recon = model.predict(val_X)  # Get the actual validation set
+    val_errors = np.mean(np.square(val_X - val_recon), axis=(1,2))
     threshold = np.percentile(val_errors, 99) 
     
-    print(f"\nTraining complete. Recommended anomaly threshold: {threshold:.6f}")
+    print(f"\nTraining complete on {serverName}. Recommended anomaly threshold: {threshold:.6f}\n")
     print(f"Final Training Loss: {history.history['loss'][-1]:.6f}")
     print(f"Final Validation Loss: {history.history['val_loss'][-1]:.6f}")
     
     # 6. Model acceptance check
-    max_allowed_loss = np.mean(val_errors) + 2 * np.std(val_errors)
+    max_allowed_loss = np.mean(val_errors) + accept * np.std(val_errors)
     final_val_loss = history.history['val_loss'][-1]
     
     if final_val_loss > max_allowed_loss:
@@ -203,7 +212,7 @@ def train_and_validate(data, serverName, seq_len, val_split=0.1, epochs=20, batc
     ))
     fig.add_trace(go.Scatter(
         x=list(range(len(val_errors))),
-        y=[anomaly_threshold] * len(val_errors),
+        y=[threshold] * len(val_errors),
         mode='lines',
         name='Anomaly Threshold',
         line=dict(color='red', dash='dash')
