@@ -1,5 +1,11 @@
 import sqlite3 
 import pandas as pd 
+import random, string 
+
+
+def generateAutoID(length=8):
+    return ''.join(random.choices(string.ascii_uppercase + string.digits, k=length))
+
 
 def anomalies():
     """Creates the anomalies table in the local SQLite DB if it doesn't exist."""
@@ -12,14 +18,13 @@ def anomalies():
             if not table_exists:
                 c.execute("""
                     CREATE TABLE IF NOT EXISTS anomalies (
-                        id INTEGER PRIMARY KEY AUTOINCREMENT,
-                        timestamp TEXT NOT NULL,
-                        server TEXT NOT NULL,
-                        metric TEXT NOT NULL, -- 'CPU', 'MEM', 'DISK'
-                        value REAL NOT NULL, -- anomalous_value 
-                        severity REAL NOT NULL,
-                        ai_summary TEXT,
-                        ai_recommendation TEXT)
+                        ID TEXT PRIMARY KEY,
+                        METRIC TEXT NOT NULL,
+                        SEVERITY TEXT NOT NULL,
+                        SOURCE TEXT NOT NULL,
+                        TIMESTAMP TEXT NOT NULL,
+                        metric TEXT NOT NULL,
+                        AI_SUMMARY TEXT)
                 """)
                 conn.commit()
             else:
@@ -79,7 +84,7 @@ def featureImportance(serverName):
             else:
                 pass
     except Exception as e:
-        print(f'Error while creating the create_alert_users_table table: {e} ')
+        print(f'Error while creating the featureImportance table: {e} ')
 
 
 
@@ -106,7 +111,29 @@ def alertUsers():
             else:
                 pass
     except Exception as e:
-        print(f'Error while creating the create_alert_users_table table: {e} ')
+        print(f'Error while creating the alertUsers table: {e} ')
+
+def timeStampKeeper():
+    """Keeps the last time stamp each server sent info to the db"""
+    try:
+        with sqlite3.connect('ServerSide/database/featImportance.sqlite3') as conn:
+            conn.execute('PRAGMA journal_mode=WAL')
+            c = conn.cursor()
+            c.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='latestTime';")
+            table_exists = c.fetchone()
+            if not table_exists:
+                c.execute("""
+                    CREATE TABLE IF NOT EXISTS latestTime (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        server TEXT,
+                        lastTime TEXT,
+                    )
+                """)
+                conn.commit()
+            else:
+                pass
+    except Exception as e:
+        print(f'Error while creating the latestTime table: {e} ')    
 
 
 
@@ -133,11 +160,11 @@ def createRegisteredEmails():
 
 
 
-
 if __name__ == '__main__':
     anomalies()
     retrainLog()
     alertUsers()
     createRegisteredEmails()
+    timeStampKeeper()
     # ! Dont add the featureImportance function, it will be added in the model training script
     print("All tables created successfully.")

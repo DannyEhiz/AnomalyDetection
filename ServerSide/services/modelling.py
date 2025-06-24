@@ -1,7 +1,7 @@
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
-import csv
+import csv, json
 import xgboost as xgb
 import shap
 import warnings 
@@ -13,11 +13,11 @@ from keras.layers import LSTM, RepeatVector, TimeDistributed, Dense
 from tensorflow.keras.callbacks import EarlyStopping # type: ignore
 import plotly.graph_objects as go
 import sqlite3
-import os, joblib
+import os, joblib, time
 from ServerSide.core.createTables import featureImportance
 import logging
 from logging.handlers import RotatingFileHandler
-from core.logger import logging_setup
+from ServerSide.core.logger import logging_setup
 logger = logging_setup(log_dir='logs/modelling', 
                        general_log='modellingInfo.log', 
                        error_log='modellingError.log', 
@@ -36,13 +36,13 @@ def loadData(serverName: str):
     try:
         with sqlite3.connect('ServerSide/database/main.sqlite3') as conn:
             conn.execute('PRAGMA journal_mode=WAL')
-            data = pd.read_sql_query(f"SELECT * FROM Infra_Utilization WHERE Hostname = ?", conn, params=(serverName,))
+            data = pd.read_sql_query("SELECT * FROM Infra_Utilization WHERE Hostname = ?", conn, params=(serverName,))
         if not data.empty:
             data['LogTimestamp'] = pd.to_datetime(data['LogTimestamp'])
             data['NetworkTrafficReceived'] = data['NetworkTrafficReceived']/ 1024
             data['NetworkTrafficSent'] = data['NetworkTrafficSent']/ 1024
-            data = data[data.LogTimestamp >= '2025-06-11']
             data = data.resample('1min', on='LogTimestamp', closed='right', label='right').mean()
+            data['Hour'] = data.index.hour
             data.dropna(inplace = True)
             return data
         else:
@@ -60,7 +60,7 @@ def preprocessData(df: pd.DataFrame, serverName: str):
         pd.DataFrame: Preprocessed DataFrame with outliers removed and scaled.
     """
     if df is not None or not df.empty:
-        cols = ['CPUUsage', 'MemoryUsage', 'DiskUsage', 'NetworkTrafficReceived', 'NetworkTrafficSent']
+        cols = ['Hour', 'CPUUsage', 'MemoryUsage', 'DiskUsage', 'NetworkTrafficReceived', 'NetworkTrafficSent']
         try:
             data = df.copy()
             for col in cols:
@@ -81,7 +81,7 @@ def createSequence(df: pd.DataFrame, seq_len):
     return X_train
 
 
-def buildLSTM_Autoencoder(data, sequence_length):
+def buildLSTM_Autoencoder(sequence_length):
     """
     Build and compile the LSTM model.
     Args:
@@ -90,17 +90,17 @@ def buildLSTM_Autoencoder(data, sequence_length):
         keras.models.Sequential: Compiled LSTM model.
     """
     model = Sequential([
-        LSTM(128, activation='relu', input_shape=(sequence_length, 5), return_sequences=False),
+        LSTM(128, activation='relu', input_shape=(sequence_length, 6), return_sequences=False),
         RepeatVector(sequence_length),
         LSTM(128, activation='relu', return_sequences=True),
-        TimeDistributed(Dense(5))
+        TimeDistributed(Dense(6))
     ])
     model.compile(optimizer='adam', loss='mse')
     # model.fit(data, data, epochs=4, batch_size=32, validation_split=0.1, verbose=1 ) # type: ignore
     
     return model
 
-def train_and_validate(data, serverName, seq_len, modelAcceptability, val_split=0.1, epochs=20, batch_size=32):
+def train_and_validate(data, serverName, seq_len, modelAcceptability='strict', val_split=0.1, epochs=20, batch_size=32):
     """
     modelAcceptability is either strict, lenient, or robust
     Full training pipeline with dynamic thresholding
@@ -157,7 +157,7 @@ def train_and_validate(data, serverName, seq_len, modelAcceptability, val_split=
         print(f"\t\t❌ {serverName} Model rejected - Validation loss exceeds threshold ({final_val_loss:.6f} > {max_allowed_loss:.6f})")
         logger.error(f"{serverName} Model rejected - Validation loss exceeds threshold ({final_val_loss:.6f} > {max_allowed_loss:.6f})")
         modelAccepted = False
-        with open('models/rejectedModels.csv', 'a', newline='') as csvfile:  # Open in append mode
+        with open('ServerSide/models/rejectedModels.csv', 'a', newline='') as csvfile:  # Open in append mode
             csv_writer = csv.writer(csvfile)
             # Write header if the file is empty
             if csvfile.tell() == 0:
@@ -168,8 +168,20 @@ def train_and_validate(data, serverName, seq_len, modelAcceptability, val_split=
     print(f"\t\t✅ {serverName} Model accepted - Validation loss within acceptable range")
     logger.info(f"{serverName} Model accepted - Validation loss within acceptable range")
     modelAccepted = True
-    os.makedirs(f'ServerSide/models/LSTM', exist_ok=True)
-    model.save(f'ServerSide/models/LSTM/{serverName}_lstm.h5')
+
+    strictThresh = np.mean(val_errors) + 1.5 * np.std(val_errors)
+    lenientThresh = np.mean(val_errors) + 2.0 * np.std(val_errors)
+    robustThresh = np.mean(val_errors) + 3.0 * np.std(val_errors)
+    thresholds = {
+        'strict': strictThresh,
+        'lenient': lenientThresh,
+        'robust': robustThresh
+    }
+    os.makedirs(f'ServerSide/models/LSTM/{serverName}', exist_ok=True)
+    model.save(f'ServerSide/models/LSTM/{serverName}/{serverName}_lstm.h5')
+    with open(f'ServerSide/models/LSTM/{serverName}/thresholds.json', 'w') as f:
+        json.dump(thresholds, f)
+
 
     # Summarize the loss and fit a surrogate model like XGBoost. That gives you interpretable SHAP values explaining which features contributed most to high reconstruction error (i.e., anomaly score).
     reconstruction = model.predict(X_train)
@@ -185,22 +197,20 @@ def train_and_validate(data, serverName, seq_len, modelAcceptability, val_split=
 
     # Create a ranked DataFrame of feature that most contribute to the anomaly
     importance_df = pd.DataFrame({
-        'Feature': ['CPUUsage', 'MemoryUsage', 'DiskUsage', 'NetworkTrafficReceived', 'NetworkTrafficSent'],
+        'Feature': ['Hour', 'CPUUsage', 'MemoryUsage', 'DiskUsage', 'NetworkTrafficReceived', 'NetworkTrafficSent'],
         'Mean_SHAP_Importance': mean_shap
     }).sort_values(by='Mean_SHAP_Importance', ascending=False).reset_index(drop=True)
     
     saveFeatureImportance(serverName, importance_df)
+    # importance_df.to_csv(f'ServerSide/models/LSTM/{serverName}/featImportance.csv', index=False)
 
-    shap.summary_plot(shap_values, X_flat, feature_names=['CPUUsage', 'MemoryUsage', 'DiskUsage', 'NetworkTrafficReceived', 'NetworkTrafficSent'], show=False)
+
+    shap.summary_plot(shap_values, X_flat, feature_names=['Hour', 'CPUUsage', 'MemoryUsage', 'DiskUsage', 'NetworkTrafficReceived', 'NetworkTrafficSent'], show=False)
     plotfig = plt.gcf()
     os.makedirs(f'ServerSide/models/shapSummaryPlot', exist_ok=True)
     plotfig.savefig(f"ServerSide/models/shapSummaryPlot/{serverName}_@shap_summary.svg", bbox_inches="tight")
     plt.close(plotfig)
 
-    # Recontruction Loss Plot 
-    mean_mse = np.mean(val_errors)
-    std_mse = np.std(val_errors)
-    anomaly_threshold = mean_mse + 3 * std_mse
     # Create the plot
     fig = go.Figure()
     fig.add_trace(go.Scatter(
@@ -237,34 +247,4 @@ def saveFeatureImportance(serverName, data):
         c = conn.cursor()  
         data.to_sql(serverName, conn, if_exists='replace', index=False) 
         del data
-
-
-
-if __name__ == "__main__":
-    with sqlite3.connect('main.sqlite3') as conn:
-        conn.execute('PRAGMA journal_mode=WAL')
-        servers = pd.read_sql_query("SELECT DISTINCT Hostname FROM Infra_Utilization", conn)
-    server_list = servers['Hostname'].tolist()
-
-    print(f"Found {len(server_list)} servers in the database.")
-    for server in server_list:
-        print(f"Processing server: {server}")
-        data = loadData(server)
-        if data is not None and not data.empty:
-            result = train_and_validate(data, server, seq_len=60)
-            if result is not None:
-                modelAccepted, model, threshold, historyLoss, historyValLoss, fig = result
-                if modelAccepted:
-                    print(f"Model for {server} trained and saved successfully.")
-                    logger.info(f"Model for {server} trained and saved successfully.")
-                else:
-                    print(f"Model for {server} was not accepted.")
-                    logger.info(f"Model for {server} was not accepted.")
-            else:
-                print(f"Training failed for server {server}.")
-                logger.error(f"Training failed for server {server}.")
-        else:
-            print(f"No data found for server {server}. Skipping to next server...")
-            logger.error(f"No data found for server {server}. Skipping to next server...")
-
 

@@ -158,7 +158,7 @@ def saveToSQLite(data: pd.DataFrame):
         try:
             if data is not None:
                 # If the table doesn't exist, create it. if it exists, append new rows to it
-                data.to_sql('Infra_Utilization', conn, if_exists='replace', index=False) 
+                data.to_sql('Infra_Utilization', conn, if_exists='append', index=False) 
                 saveLastUpdateTime()
                 del data
                 gc.collect()

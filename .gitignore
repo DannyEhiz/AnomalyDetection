@@ -4,4 +4,5 @@ virtualenv/
 *.log
 ServerSide/core/config.json
 ServerSide/*.sqlite3
-
+infraDash.html
+view.html
