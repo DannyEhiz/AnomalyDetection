@@ -23,7 +23,6 @@ def anomalies():
                         SEVERITY TEXT NOT NULL,
                         SOURCE TEXT NOT NULL,
                         TIMESTAMP TEXT NOT NULL,
-                        metric TEXT NOT NULL,
                         AI_SUMMARY TEXT)
                 """)
                 conn.commit()

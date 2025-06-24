@@ -99,6 +99,9 @@ def refresh_data():
             print("Data table fetched from clientDB is empty. No new data is saved to tempDB.")
         else:
             saveToSQLite(data)
+            # Check if the data is already existing at first. 
+            # If its not, save a tag that its existing into a tinyDB json 
+            # But if its existing, save the newly collected data to another table for ease of access 
             if not tableIsExisting('ServerSide/database/aux.json', 'dataPresent'):
                 createRecord('ServerSide/database/aux.json', 'dataPresent', 'isDataPresent')
                 updateRecord('ServerSide/database/aux.json', 'dataPresent', 'isDataPresent', True, append = False)
@@ -107,7 +110,9 @@ def refresh_data():
                     c = conn.cursor()  
                     data.to_sql('lastLog', conn, if_exists='replace', index=False) 
 
-            if not tableIsExisting('ServerSide/database/aux.json', 'latestLog'):
+            # Also if its first time collection, save the time stamp 
+            # It will be updated in the run_modelling function 
+            if not tableIsExisting('ServerSide/database/aux.json', 'latestLog'): 
                 createRecord('ServerSide/database/aux.json', 'latestLog', 'logTime')
 
             delete_old_rows()

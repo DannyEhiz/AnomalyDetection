@@ -1,4 +1,3 @@
-from ServerSide.services.modelling import train_and_validate, loadData
 import pandas as pd 
 import numpy as np
 import sqlite3
@@ -24,162 +23,113 @@ def processModellingData(data):
     return data
 
 
+def saveAnomaly(metric, severity, serverName, timeStamp, ai_summary):
+    with sqlite3.connect('ServerSide/database/main.sqlite3') as conn:
+        conn.execute('PRAGMA journal_mode=WAL;')
+        c = conn.cursor()
+        c.execute(
+            '''
+            INSERT INTO anomalies (ID, METRIC, SEVERITY, SOURCE, TIMESTAMP, AI_SUMMARY)
+            VALUES (?, ?, ?, ?, ?, ?)
+            ''',
+            (generateAutoID(), metric, severity, serverName, timeStamp, ai_summary)
+        )
+        conn.commit()
 
-def runModelling():
-    latestTime = retrieveRecord('ServerSide/database/aux.json', 'latestLog', 'logTime')
-    with sqlite3.connect('ServerSide/database/mini.sqlite3') as conn:
-        latestLog = pd.read_sql_query('SELECT * FROM lastLog', conn)
 
-    if latestLog.empty: #* It will be empty on the first run, so we skip running detector, and begin detector in the second run
-        return None
-    if latestTime == latestLog.LogTimestamp.max(): # Means data has not been updated
-        return None
-    updateRecord('ServerSide/database/aux.json', 'latestLog', 'logTime', latestLog.LogTimestamp.max(), append=False)
+def process_server(server, confirmedLatestLog):
+    """
+    Processes a single server for anomaly detection, including loading models, scalers,
+    running predictions, and saving anomalies if detected.
+    """
+    model_path = f'ServerSide/models/LSTM/{server}/{server}_lstm.h5'
+    thresholds_path = f'ServerSide/models/LSTM/{server}/thresholds.json'
 
-    for server in np.array(latestLog.Hostname.unique().tolist()).reshape(-1):
-        model_path = f'ServerSide/models/LSTM/{server}/{server}_lstm.h5'
+    if not os.path.exists(model_path) or not os.path.exists(thresholds_path):
+        print(f"🚫 Missing model or thresholds for {server}. Skipping...")
+        logger.error(f"Missing model or thresholds for {server}. Skipping...")
+        return
+
+    with open(thresholds_path, 'r') as f:
+        thresholds = json.load(f)
+
+    with sqlite3.connect('ServerSide/database/main.sqlite3') as conn:
+        c = conn.cursor()
+        c.execute(f"SELECT MAX(LogTimestamp) FROM Infra_Utilization WHERE Hostname = '{server}'")
+        maxTime = c.fetchone()[0]
+        last2Hours = (pd.to_datetime(maxTime) - timedelta(hours=2)).strftime('%Y-%m-%d %H:%M:%S')
+        query = f"""
+                SELECT * FROM Infra_Utilization WHERE Hostname = '{server}'
+                AND LogTimestamp > '{last2Hours}'
+            """
+        data = pd.read_sql_query(query, conn)
+
+    data = processModellingData(data).iloc[:60]
+    for col in data.columns:
         scaler_path = f'ServerSide/models/scalers/{server}/{col}_scaler.pkl'
-        with open(f'ServerSide/models/LSTM/{server}/thresholds.json', 'r') as f:
-            thresholds = json.load(f)
-        
-        if not os.path.exists(model_path):
-            if not os.path.exists(scaler_path):
-                print(f"Seeing {server} the first time. No model or scaler found. Skipping...")
-                logger.error(f"Seeing {server} the first time. No model or scaler found. Skipping...")
-            else:
-                print(f"🚫 Scaler exists for {server} but model is missing. \nData is being collected but model is not trained...Skipping")
-                logger.error(f"Scaler exists for {server} but model is missing.\nData is being collected but model is not trained.. Skipping")
-            continue
+        if not os.path.exists(scaler_path):
+            print(f"🚫 Missing scaler for {server} - {col}. Skipping...")
+            logger.error(f"Missing scaler for {server} - {col}. Skipping...")
+            return
 
-        with sqlite3.connect('ServerSide/database/main.sqlite3') as conn:
-            c.execute(f"SELECT MAX(LogTimestamp) FROM Infra_Utilization WHERE Hostname = '{server}'")
-            maxTime = c.fetchone()
-            last2Hours = (pd.to_datetime(maxTime) - timedelta(hours=2)).strftime('%Y-%m-%s %H:%M:%S')
-            query = f"""
-                    SELECT * FROM Infra_Utilization WHERE Hostname = '{server}'
-                    AND LogTimestamp > '{last2Hours[0]}'
-                """
-            data = pd.read_sql_query(query, conn)
+        transformer = joblib.load(scaler_path)
+        data[col] = transformer.transform(data[[col]])
 
-        data = processModellingData(data)
-        data = data.iloc[:60]  # select 60 time stamps
+    model = load_model(model_path)
+    sequence = np.array(data).reshape(1, 60, 6)
+    reconstructed = model.predict(sequence)
 
-        for col in data.columns:
-            scaler_path = f'ServerSide/models/scalers/{server}/{col}_scaler.pkl'
-            transformer = joblib.load(scaler_path)
-            data[col] = transformer.transform(data[[col]])
+    original_last_minute = sequence[0, -1, :]
+    reconstructed_last_minute = reconstructed[0, -1, :]
+    reconstruction_error = np.mean((original_last_minute - reconstructed_last_minute) ** 2)
 
-        model = load_model(model_path)
-        sequence = np.array(data).reshape(1, 60, 6)
-        reconstructed = model.predict(sequence)
-        original_last_minute = sequence[0, -1, :]
-        reconstructed_last_minute = reconstructed[0, -1, :] 
-        reconstruction_error = np.mean((original_last_minute - reconstructed_last_minute) ** 2)
-        if reconstruction_error >= thresholds['robust']:
-            anomaly_level, anomalyTrue = 'Severe', True
-        elif reconstruction_error >= thresholds['lenient']:
-            anomaly_level,  anomalyTrue = 'High', True
-        elif reconstruction_error >= thresholds['strict']:
-            anomaly_level, anomalyTrue = 'Light', True
-        else:
-            anomalyTrue = False
+    anomalyTrue = False
+    if reconstruction_error >= thresholds['robust']:
+        anomaly_level = 'Severe'
+        anomalyTrue = True
+    elif reconstruction_error >= thresholds['lenient']:
+        anomaly_level = 'High'
+        anomalyTrue = True
+    elif reconstruction_error >= thresholds['strict']:
+        anomaly_level = 'Light'
+        anomalyTrue = True
 
+    if anomalyTrue:
         feature_names = ['Hour', 'CPUUsage', 'MemoryUsage', 'DiskUsage', 'NetworkTrafficReceived', 'NetworkTrafficSent']
         feature_errors = np.abs(original_last_minute - reconstructed_last_minute)
-        # Create a DataFrame for easy tracking
         error_report = pd.DataFrame({
             'Feature': feature_names,
             'Error': feature_errors
-        })
-        error_report = error_report.sort_values(by='Error', ascending=False).reset_index(drop=True)
+        }).sort_values(by='Error', ascending=False).reset_index(drop=True)
+
         error_report.to_csv(f'ServerSide/models/LSTM/{server}/featImportance.csv', index=False)
 
+        ai_summary_path = f'ServerSide/models/LSTM/{server}/{server}_aiSummary.txt'
+        with open(ai_summary_path, 'w') as f:
+            f.write(f"Anomaly Level: {anomaly_level}\n")
+            f.write(f"Top contributing feature: {error_report['Feature'].iloc[0]}\n")
+
+        saveAnomaly(error_report['Feature'].iloc[0], anomaly_level, server, confirmedLatestLog, ai_summary_path)
+        print(f"🚨 Anomaly Detected for {server}: {anomaly_level}")
+        logger.info(f'Anomaly Detected for {server}: {anomaly_level}')
 
 
-# def saveLastCollectionTime(data):
-#     with sqlite3.connect('ServerSide/database/main.sqlite3') as conn:
-#         c = conn.cursor()  
-#         try:
-#             if data is not None:
-#                 data.to_sql('latestTime', conn, if_exists='replace', index=False) 
-#                 gc.collect()
-#                 del gc.garbage[:]
-#             else:
-#                 print('Couldnt save lastLog to db')
-#                 pass
-#         except Exception as e:
-#             print(f"Error occurred while saving latest time to SQLite: {e}") 
+def runModelling():
+    """
+    Runs the anomaly detection process on the most recently refreshed telemetry data.
+    """
+    latestTime = retrieveRecord('ServerSide/database/aux.json', 'latestLog', 'logTime')
+    try:
+        with sqlite3.connect('ServerSide/database/mini.sqlite3') as conn:
+            latestLog = pd.read_sql_query('SELECT * FROM lastLog', conn)
+    except Exception as e:
+        latestLog = pd.DataFrame()
 
-# def upDatelastLogTime(serverName):
-#     with sqlite3.connect('ServerSide/database/main.sqlite3') as conn:
-#         c = conn.cursor()  
-#         lastLogTime = pd.read_sql_query('SELECT * FROM latestTime', conn)
-#         infraLog = pd.read_sql_query('SELECT * FROM Infra_Utilization LIMIT 1', conn)
-#         infraLogEmpty =  infraLog.empty
-#         lastestLogEmpty = lastLogTime.empty    
+    if latestLog.empty or latestTime == latestLog.LogTimestamp.max():
+        return None
 
+    updateRecord('ServerSide/database/aux.json', 'latestLog', 'logTime', latestLog.LogTimestamp.max(), append=False)
+    confirmedLatestLog = retrieveRecord('ServerSide/database/aux.json', 'latestLog', 'logTime')
 
-# def upDateLastLogTime():
-#     with sqlite3.connect('ServerSide/database/main.sqlite3') as conn:
-#         c = conn.cursor()  
-#         lastLogTime = pd.read_sql_query('SELECT * FROM latestTime', conn)
-#         infraLog = pd.read_sql_query('SELECT * FROM Infra_Utilization LIMIT 1', conn)
-#         infraLogEmpty =  infraLog.empty
-#         lastestLogEmpty = lastLogTime.empty
-
-#         if infraLogEmpty:
-#             return None
-#         if lastestLogEmpty:
-#             query = """
-#                         SELECT Hostname, MAX(LogTimestamp) AS LatestLogTime
-#                         FROM Infra_Utilization
-#                         GROUP BY Hostname
-#                     """
-#             data = pd.read_sql_query(query, conn)
-#             saveLastCollectionTime(data)
-#             print('Updated latest log collection time')
-
-
-# def dataIsUpdated(serverName):
-#     with sqlite3.connect('ServerSide/database/main.sqlite3') as conn:
-#         lastInfraLog = pd.read_sql_query(f"SELECT MAX(LogTimestamp) FROM Infra_Utilization WHERE Hostname='{serverName}'", conn).values.tolist()[0][0]
-#         lastTimeKeptLog = pd.read_sql_query(f"SELECT MAX(LogTimestamp) FROM latestTime WHERE Hostname = '{serverName}'", conn).values.tolist()[0][0]
-
-#     if lastInfraLog == lastTimeKeptLog:
-#         return True 
-#     else:
-#         return False
-    
-
-    # with sqlite3.connect('ServerSide/database/main.sqlite3') as conn:
-    #     c = conn.cursor()  
-    #     servers = pd.read_sql_query('SELECT DISTINCT(Hostname) FROM Infra_Utilization', conn).values.tolist()
-    #     servers = np.array(servers).flatten()
-    
-
-    # with sqlite3.connect('ServerSide/database/main.sqlite3') as conn:
-    #     conn.execute('PRAGMA journal_mode=WAL')
-    #     servers = pd.read_sql_query("SELECT DISTINCT Hostname FROM Infra_Utilization", conn)
-    # server_list = servers['Hostname'].tolist()
-
-    # print(f"Found {len(server_list)} servers in the database.")
-    # for server in server_list:
-    #     print(f"Processing server: {server}")
-    #     data = loadData(server)
-    #     if data is not None and not data.empty:
-    #         try:
-    #             accepted = train_and_validate(data, server, modelAcceptability='robust', seq_len=60)
-    #             if accepted:
-    #                 print(f"Model for {server} trained and saved successfully.")
-    #                 logger.info(f"Model for {server} trained and saved successfully.")
-    #             else:
-    #                 print(f"Model for {server} was not accepted.")
-    #                 logger.info(f"Model for {server} was not accepted.")
-    #         except Exception as e:
-    #             print(f"There was an error training model for {server}: {e}.")
-    #             logger.error(f"There was an error training model for {server}: {e}.")
-    #     else:
-    #         print(f"No data found for server {server}. Skipping to next server...")
-    #         logger.error(f"No data found for server {server}. Skipping to next server...")
-    #     print(f'\nWating for 5secs for the next server run...')
-    #     time.sleep(5) 
+    for server in np.array(latestLog.Hostname.unique().tolist()).reshape(-1):
+        process_server(server, confirmedLatestLog)
