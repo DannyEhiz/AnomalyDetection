@@ -7,6 +7,26 @@ def generateAutoID(length=8):
     return ''.join(random.choices(string.ascii_uppercase + string.digits, k=length))
 
 
+def modelTrainHistory():
+    try:
+        with sqlite3.connect('ServerSide/database/mini.sqlite3') as conn:
+            conn.execute('PRAGMA journal_mode=WAL;')
+            c = conn.cursor()
+            c.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='trainHistory';")
+            table_exists = c.fetchone()
+            if not table_exists:
+                c.execute("""
+                    CREATE TABLE IF NOT EXISTS trainHistory (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        server TEXT NOT NULL,
+                        lastTrained TEXT NOt NULL)
+                """)
+                conn.commit()
+            else:
+                pass
+    except Exception as e:
+        print(f'Error while creating the trainHistory table: {e} ')
+
 def anomalies():
     """Creates the anomalies table in the local SQLite DB if it doesn't exist."""
     try:

@@ -6,3 +6,5 @@ ServerSide/core/config.json
 ServerSide/*.sqlite3
 infraDash.html
 view.html
+ServerSide/services/testes.py
+ServerSide/database/aux.json

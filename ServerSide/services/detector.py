@@ -39,8 +39,25 @@ def saveAnomaly(metric, severity, serverName, timeStamp, ai_summary):
 
 def process_server(server, confirmedLatestLog):
     """
-    Processes a single server for anomaly detection, including loading models, scalers,
-    running predictions, and saving anomalies if detected.
+    Runs the anomaly detection process on the most recently refreshed telemetry data.
+
+    Workflow:
+    - Retrieves the latest recorded data collection timestamp from auxiliary storage.
+    - Loads the most recent batch of collected data from SQLite ('lastLog' table).
+    - If the data is empty or hasn't been updated, exits without running detection.
+    - For each server:
+        - Checks if both model and scaler files exist. Skips if missing.
+        - Loads the last 2 hours of telemetry data for that server.
+        - Processes the data and applies feature scaling.
+        - Runs the server-specific LSTM model to compute reconstruction errors.
+        - Classifies the anomaly based on defined thresholds (strict, lenient, robust).
+        - If an anomaly is detected:
+            - Logs the most impacted feature.
+            - Saves feature importance report.
+            - Creates an AI summary text file placeholder.
+            - Saves the anomaly event to the database.
+
+    This function ensures that anomaly detection only runs when fresh data is available and the necessary model files exist.
     """
     model_path = f'ServerSide/models/LSTM/{server}/{server}_lstm.h5'
     thresholds_path = f'ServerSide/models/LSTM/{server}/thresholds.json'
@@ -48,7 +65,7 @@ def process_server(server, confirmedLatestLog):
     if not os.path.exists(model_path) or not os.path.exists(thresholds_path):
         print(f"🚫 Missing model or thresholds for {server}. Skipping...")
         logger.error(f"Missing model or thresholds for {server}. Skipping...")
-        return
+        return None
 
     with open(thresholds_path, 'r') as f:
         thresholds = json.load(f)

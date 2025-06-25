@@ -1,7 +1,10 @@
+import sys 
+import os
+sys.path.append(os.path.abspath('.'))
 import pandas as pd
 from ServerSide.core.connection import fetchFromClientDB, saveToSQLite   
 import sqlite3
-from datetime import datetime
+from datetime import datetime, timedelta
 import json
 import time
 import os
@@ -9,7 +12,7 @@ import gc
 import logging
 from ServerSide.core.tinyDBHandler import retrieveRecord, updateRecord, createRecord, tableIsExisting, removeItemFromRecord
 from logging.handlers import RotatingFileHandler
-from core.logger import logging_setup
+from ServerSide.core.logger import logging_setup
 logger = logging_setup(log_dir='logs/dataRefresh', 
                        general_log='refreshInfo.log', 
                        error_log='refreshError.log', 
@@ -17,7 +20,7 @@ logger = logging_setup(log_dir='logs/dataRefresh',
 
 
 # Load configuration
-with open('core/config.json') as config_file:
+with open('ServerSide/core/config.json') as config_file:
     configVar = json.load(config_file)
 client_table_name1 = configVar['client_table_name1']
 client_table_name2 = configVar['client_table_name2']
@@ -83,11 +86,30 @@ def delete_old_rows():
     except sqlite3.Error as e:
         print(f"An error occurred: {e}")
     finally:
-        if conn:
+        if conn: # type: ignore
             conn.close()
 
 
 def refresh_data():
+    """
+    Refreshes telemetry data from the client database and updates the local SQLite storage.
+
+    Workflow:
+    - Initializes the refresh log table.
+    - Fetches new data from the client database.
+    - If the fetched data is empty, logs an error.
+    - If data is collected:
+        - Saves data to SQLite.
+        - Checks if this is the first data collection:
+            - If yes, creates tracking records in a TinyDB JSON file.
+            - If no, saves the new batch to a temporary 'lastLog' table.
+        - Ensures initial timestamp tracking is in place for anomaly detection.
+        - Deletes old rows from the main storage to manage space.
+    - Logs success or failure for each refresh attempt.
+    
+    This function is expected to run on a regular schedule to keep the local database updated for anomaly detection.
+    """
+
     create_refresh_logs_table()
     print("Starting data refresh...")
     data = None
@@ -100,8 +122,8 @@ def refresh_data():
         else:
             saveToSQLite(data)
             # Check if the data is already existing at first. 
-            # If its not, save a tag that its existing into a tinyDB json 
-            # But if its existing, save the newly collected data to another table for ease of access 
+                # If its not, saves a tag into tinyDB json to signify data is now existence. Skips saving newly collected data to small miniDB
+                # But if its existing, save the newly collected data to miniDB for ease of access 
             if not tableIsExisting('ServerSide/database/aux.json', 'dataPresent'):
                 createRecord('ServerSide/database/aux.json', 'dataPresent', 'isDataPresent')
                 updateRecord('ServerSide/database/aux.json', 'dataPresent', 'isDataPresent', True, append = False)

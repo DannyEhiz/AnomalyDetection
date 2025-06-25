@@ -9,7 +9,7 @@ from datetime import datetime, timedelta
 import gc
 import logging
 from logging.handlers import RotatingFileHandler
-from core.logger import logging_setup
+from ServerSide.core.logger import logging_setup
 logger = logging_setup(log_dir='logs/dataConnection', 
                        general_log='connectionInfo.log', 
                        error_log='connectionError.log', 
@@ -18,7 +18,7 @@ logger = logging_setup(log_dir='logs/dataConnection',
 seven_days_ago_str = (datetime.now() - timedelta(days=7)).strftime('%Y-%m-%d %H:%M:%S')
 
 # Config Variables 
-with open('core/config.json') as config_file:
+with open('ServerSide/core/config.json') as config_file:
     configVar = json.load(config_file)
 
 ClientServer = configVar['client_server']
@@ -91,7 +91,7 @@ def fetchFromClientDB(tab1, tab2):
     password = ClientDBPass 
     conn = connectClientDB(server, database, username, password)
 
-    last_update_time = get_last_update_time()
+    last_update_time = None #get_last_update_time()
     df = None
 
     if not last_update_time:
