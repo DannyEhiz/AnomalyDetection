@@ -9,7 +9,7 @@ from datetime import datetime, timedelta
 import gc
 import logging
 from logging.handlers import RotatingFileHandler
-from core.logger import logging_setup
+from ServerSide.core.logger import logging_setup
 logger = logging_setup(log_dir='logs/dataConnection', 
                        general_log='connectionInfo.log', 
                        error_log='connectionError.log', 
@@ -18,7 +18,7 @@ logger = logging_setup(log_dir='logs/dataConnection',
 seven_days_ago_str = (datetime.now() - timedelta(days=7)).strftime('%Y-%m-%d %H:%M:%S')
 
 # Config Variables 
-with open('core/config.json') as config_file:
+with open('ServerSide/core/config.json') as config_file:
     configVar = json.load(config_file)
 
 ClientServer = configVar['client_server']
@@ -61,7 +61,7 @@ def connectClientDB(server: str, database: str, username: str, password: str):
         print("Couldnt connect to database: ",e)
         return None
 
-def tableExist(tableName: str, dbName: str = 'main.sqlite3') -> bool:
+def tableExist(tableName: str, dbName: str = 'ServerSide/database/main.sqlite3') -> bool:
     """
     Check if a table exists in the SQLite database.
     Args:
@@ -91,13 +91,8 @@ def fetchFromClientDB(tab1, tab2):
     password = ClientDBPass 
     conn = connectClientDB(server, database, username, password)
 
-    last_update_time = get_last_update_time()
+    last_update_time = None #get_last_update_time()
     df = None
-
-    with sqlite3.connect('main.sqlite3') as conn:
-        c = conn.cursor()
-        c.execute("DELETE FROM Infra_Utilization")
-        c.execute("VACUUM")
 
     if not last_update_time:
         last_update_time = seven_days_ago_str
@@ -158,12 +153,12 @@ def saveToSQLite(data: pd.DataFrame):
     Exception: If an error occurs during the database operations, 
                an exception will be raised and printed to the console.
     """
-    with sqlite3.connect('main.sqlite3') as conn:
+    with sqlite3.connect('ServerSide/database/main.sqlite3') as conn:
         c = conn.cursor()  
         try:
             if data is not None:
                 # If the table doesn't exist, create it. if it exists, append new rows to it
-                data.to_sql('Infra_Utilization', conn, if_exists='replace', index=False) 
+                data.to_sql('Infra_Utilization', conn, if_exists='append', index=False) 
                 saveLastUpdateTime()
                 del data
                 gc.collect()
@@ -182,7 +177,7 @@ def saveLastUpdateTime():
     Returns:
         None: It doesnt return any value. All it does is save latest time to the database 
     """
-    with sqlite3.connect('main.sqlite3') as conn:
+    with sqlite3.connect('ServerSide/database/main.sqlite3') as conn:
         c = conn.cursor()
         c.execute("SELECT MAX(LogTimestamp) FROM Infra_Utilization")  # Get the latest timestamp from the Logtimestamp column   
         lastUpdate = c.fetchone()
@@ -203,7 +198,7 @@ def get_last_update_time():
         lastUpdateTime: The latest time in a SQL table and outputs the time in 'YYYY-MM-DD HH:MM:SS' format.
     """    
     try:
-        with  sqlite3.connect('main.sqlite3') as conn:
+        with  sqlite3.connect('ServerSide/database/main.sqlite3') as conn:
             c = conn.cursor()
             c.execute("SELECT last_update_time FROM latestLogTime ORDER BY id DESC LIMIT 1")    
             lastUpdate = c.fetchone()
